@@ -1,0 +1,1461 @@
+openapi: 3.0.3
+info:
+  title: Payments Service API
+  version: 1.2.0
+  description: |
+    # Payments Service
+    
+    Сервис обработки платежей и управления промокодами для платформы уцененных продуктов.
+    
+    ## 🏗 Архитектура безопасности
+    
+    ### Flow: Клиент → Gateway → Payments Service
+    
+    ```
+    ┌─────────────┐     ┌─────────────┐     ┌─────────────────┐
+    │   Client    │────▶│ API Gateway │────▶│ Payments Service│
+    └─────────────┘     └─────────────┘     └─────────────────┘
+          │                    │                      │
+          │ 1. JWT в           │ 2. Валидация         │ 3. Доверяет
+          │    Authorization   │    JWT, извлечение   │    заголовкам
+          │                    │    данных            │    от Gateway
+          ▼                    ▼                      ▼
+    Bearer <token>    X-User-ID: 123456      Читает из заголовков
+                      X-User-Role: user
+                      X-Request-ID: req_abc
+    ```
+    
+    ### Заголовки от Gateway (обязательные для всех внутренних запросов)
+    
+    | Заголовок | Значение | Описание |
+    |-----------|----------|----------|
+    | `X-User-ID` | `123456` | ID пользователя из `users.id` |
+    | `X-User-Role` | `user`/`admin`/`staff` | Роль для авторизации |
+    | `X-User-Staff-Role` | `staff`/`manager`/`admin`/`owner` | Роль сотрудника (для user role = staff) |
+    | `X-User-Is-Active` | `true`/`false` | Статус блокировки аккаунта |
+    | `X-User-Is-Verified` | `true`/`false` | Статус верификации |
+    | `X-User-Email` | `user@example.com` | Email для аудита и уведомлений |
+    | `X-User-Venue-ID` | `789` (опционально) | ID заведения для staff |
+    | `X-Request-ID` | `req_abc123` | Уникальный ID запроса для tracing |
+    
+    ### Уровни доступа
+    
+    | Роль | Доступные эндпоинты |
+    |------|-------------------|
+    | `user` | `/payments/*`, `/promo/validate` |
+    | `staff` | `/payments/*` |
+    | `admin` | Полный доступ ко всем эндпоинтам, включая `/admin/*` |
+    
+    ## 🔐 Идемпотентность
+    
+    Для создания платежей используется `transaction_id` (уникальный индекс в БД).
+    Повторный запрос с тем же `transaction_id` вернет результат первого успешного запроса.
+    
+    ## 🧮 Расчет промокодов
+    
+    **Важно:** Клиент НЕ рассчитывает скидку самостоятельно.
+    Сервер валидирует промокод и возвращает `final_amount`, который должен быть использован при создании платежа.
+  contact:
+    name: Senior Backend Team
+    email: backend-lead@company.com
+
+servers:
+  - url: https://api.gateway.com/payments/v1
+    description: Production (via API Gateway)
+  - url: https://staging.gateway.com/payments/v1
+    description: Staging
+
+tags:
+  - name: Payments
+    description: Операции с платежами для клиентов
+  - name: Promo Codes (Client)
+    description: Валидация и применение промокодов клиентами
+  - name: Promo Codes (Admin)
+    description: Управление промокодами (администраторы)
+  - name: Statistics
+    description: Статистика по промокодам и платежам
+  - name: Webhooks
+    description: Входящие уведомления от платежных шлюзов
+  - name: Health
+    description: Проверка работоспособности сервиса
+
+# =============================================
+# SECURITY & HEADERS
+# =============================================
+security:
+  - InternalAuth: []
+
+components:
+  # --- Security Schemes ---
+  securitySchemes:
+    InternalAuth:
+      type: apiKey
+      in: header
+      name: X-User-ID
+      description: |
+        Аутентификация через заголовки от API Gateway.
+        
+        Gateway валидирует JWT и передает данные пользователя:
+        - `X-User-ID`: ID пользователя (обязательно)
+        - `X-User-Role`: Роль пользователя (обязательно)
+        - `X-User-Staff-Role`: Роль сотрудника (обязательно для `X-User-Role=staff`)
+        - `X-User-Is-Active`: Статус аккаунта (обязательно)
+        - `X-User-Is-Verified`: Статус верификации (обязательно)
+        - `X-User-Email`: Email пользователя (обязательно)
+        - `X-User-Venue-ID`: ID заведения (для staff)
+        - `X-Request-ID`: ID запроса для tracing (обязательно)
+
+  # --- Общие заголовки для всех запросов ---
+  parameters:
+    # Internal Auth Headers (передаются Gateway)
+    HeaderXUserID:
+      name: X-User-ID
+      in: header
+      required: true
+      description: ID пользователя из users.id
+      schema:
+        type: string
+        example: "123456"
+    
+    HeaderXUserRole:
+      name: X-User-Role
+      in: header
+      required: true
+      description: Роль пользователя
+      schema:
+        type: string
+        enum: [user, staff, admin]
+        example: "user"
+
+    HeaderXUserStaffRole:
+      name: X-User-Staff-Role
+      in: header
+      required: false
+      description: Роль сотрудника (только если X-User-Role=staff)
+      schema:
+        type: string
+        enum: [staff, manager, admin, owner]
+        example: "staff"
+    
+    HeaderXUserIsActive:
+      name: X-User-Is-Active
+      in: header
+      required: true
+      description: Статус активности аккаунта
+      schema:
+        type: boolean
+        example: true
+    
+    HeaderXUserIsVerified:
+      name: X-User-Is-Verified
+      in: header
+      required: true
+      description: Статус верификации пользователя
+      schema:
+        type: boolean
+        example: true
+    
+    HeaderXUserEmail:
+      name: X-User-Email
+      in: header
+      required: true
+      description: Email пользователя для аудита
+      schema:
+        type: string
+        format: email
+        example: "user@example.com"
+    
+    HeaderXUserVenueID:
+      name: X-User-Venue-ID
+      in: header
+      required: false
+      description: ID заведения (опционально, для staff контекста)
+      schema:
+        type: string
+        nullable: true
+        example: "789"
+    
+    HeaderXRequestID:
+      name: X-Request-ID
+      in: header
+      required: true
+      description: Уникальный ID запроса для distributed tracing
+      schema:
+        type: string
+        format: uuid
+        example: "req_abc123-def456"
+    
+    # Pagination
+    PaginationLimit:
+      name: limit
+      in: query
+      description: Количество записей на странице
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+      example: 20
+
+    PaginationOffset:
+      name: offset
+      in: query
+      description: Смещение от начала
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+      example: 0
+
+    # Path parameters
+    PaymentId:
+      name: payment_id
+      in: path
+      required: true
+      description: ID платежа
+      schema:
+        type: string
+      example: "pay_123456789"
+
+    PromoId:
+      name: promo_id
+      in: path
+      required: true
+      description: ID промокода
+      schema:
+        type: string
+      example: "promo_987654321"
+
+  # --- Схемы данных ---
+  schemas:
+    # === Payment Schemas ===
+    PaymentStatus:
+      type: string
+      description: Статус платежа
+      enum:
+        - pending
+        - succeeded
+        - failed
+        - refunded
+        - partially_refunded
+      example: pending
+
+    PaymentMethod:
+      type: string
+      description: Способ оплаты
+      enum:
+        - bank_card
+        - sbp
+      example: bank_card
+
+    PaymentCreateRequest:
+      type: object
+      required:
+        - order_id
+        - amount
+        - payment_method
+        - transaction_id
+      properties:
+        order_id:
+          type: integer
+          description: ID заказа из Order Service (numeric)
+          example: 123456
+        amount:
+          type: number
+          format: double
+          description: Сумма к оплате (уже с учетом скидок)
+          minimum: 0.01
+          example: 1500.00
+        currency:
+          type: string
+          description: Код валюты (ISO 4217)
+          default: RUB
+          maxLength: 3
+          example: RUB
+        payment_method:
+          $ref: '#/components/schemas/PaymentMethod'
+        transaction_id:
+          type: string
+          description: Уникальный ID транзакции от клиента (для идемпотентности)
+          maxLength: 255
+          example: "txn_client_abc123"
+        promo_code:
+          type: string
+          nullable: true
+          description: Код промокода (опционально)
+          maxLength: 50
+          example: "SUMMER2024"
+        meta:
+          type: object
+          description: Дополнительные данные для шлюза
+          additionalProperties: true
+
+    PaymentResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: ID платежа в системе
+          example: "pay_123456789"
+        order_id:
+          type: integer
+          description: ID заказа
+          example: 123456
+        transaction_id:
+          type: string
+          description: Уникальный ID транзакции
+          example: "txn_client_abc123"
+        amount:
+          type: number
+          format: double
+          description: Сумма платежа
+          example: 1500.00
+        refunded_amount:
+          type: number
+          format: double
+          description: Сумма возврата (если есть)
+          example: 0.00
+        currency:
+          type: string
+          example: RUB
+        status:
+          $ref: '#/components/schemas/PaymentStatus'
+        payment_method:
+          $ref: '#/components/schemas/PaymentMethod'
+        promo_code_applied:
+          type: string
+          nullable: true
+          description: Примененный промокод
+          example: "SUMMER2024"
+        discount_amount:
+          type: number
+          format: double
+          nullable: true
+          description: Сумма скидки
+          example: 300.00
+        failure_reason:
+          type: string
+          nullable: true
+          description: Причина неудачи (если статус failed)
+        created_at:
+          type: string
+          format: date-time
+          description: Время создания
+          example: "2024-01-15T10:00:00Z"
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Время успешной оплаты
+          example: "2024-01-15T10:05:00Z"
+        refunded_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Время возврата
+          example: "2024-01-16T12:00:00Z"
+
+    # === Promo Code Schemas ===
+    DiscountType:
+      type: string
+      description: Тип скидки
+      enum:
+        - fixed
+        - percent
+      example: percent
+
+    PromoValidateRequest:
+      type: object
+      required:
+        - code
+        - order_amount
+      properties:
+        code:
+          type: string
+          description: Код промокода
+          maxLength: 50
+          example: "SUMMER2024"
+        order_amount:
+          type: number
+          format: double
+          description: Сумма заказа до скидки
+          minimum: 0
+          example: 1000.00
+
+    PromoValidateResponse:
+      type: object
+      properties:
+        is_valid:
+          type: boolean
+          example: true
+        discount_type:
+          $ref: '#/components/schemas/DiscountType'
+        discount_value:
+          type: number
+          format: double
+          description: Значение скидки (процент или фиксированная сумма)
+          example: 20.00
+        discount_amount:
+          type: number
+          format: double
+          description: Сумма скидки в валюте
+          example: 200.00
+        final_amount:
+          type: number
+          format: double
+          description: Итоговая сумма к оплате
+          example: 800.00
+        min_order_amount:
+          type: number
+          format: double
+          description: Минимальная сумма заказа для промокода
+          example: 500.00
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Срок действия промокода
+          example: "2024-12-31T23:59:59Z"
+        usages_left:
+          type: integer
+          nullable: true
+          description: Оставшееся количество использований для пользователя
+          example: 1
+
+    PromoValidationError:
+      type: object
+      properties:
+        is_valid:
+          type: boolean
+          example: false
+        error_code:
+          type: string
+          description: Код ошибки
+          enum:
+            - PROMO_NOT_FOUND
+            - PROMO_EXPIRED
+            - PROMO_INACTIVE
+            - MIN_ORDER_NOT_MET
+            - MAX_USAGES_REACHED
+            - USER_LIMIT_REACHED
+            - FIRST_ORDER_ONLY
+            - INVALID_CATEGORY
+          example: PROMO_EXPIRED
+        message:
+          type: string
+          description: Человеко-понятное сообщение
+          example: "Срок действия промокода истек"
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2023-12-31T23:59:59Z"
+
+    PromoCodeCreateRequest:
+      type: object
+      required:
+        - code
+        - discount_type
+        - discount_value
+      properties:
+        code:
+          type: string
+          description: Уникальный код промокода
+          maxLength: 50
+          pattern: "^[A-Z0-9_-]+$"
+          example: "SUMMER2024"
+        discount_type:
+          $ref: '#/components/schemas/DiscountType'
+        discount_value:
+          type: number
+          format: double
+          description: |
+            Значение скидки:
+            - Для percent: 0-100
+            - Для fixed: сумма в валюте
+          minimum: 0
+          example: 20.00
+        min_order_amount:
+          type: number
+          format: double
+          description: Минимальная сумма заказа для применения
+          default: 0
+          minimum: 0
+          example: 500.00
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          description: Срок действия (null = бессрочно)
+          example: "2024-12-31T23:59:59Z"
+        is_active:
+          type: boolean
+          default: true
+          description: Статус активности
+          example: true
+        max_usages_per_user:
+          type: integer
+          nullable: true
+          description: Лимит использований на одного пользователя (null = безлимита)
+          example: 1
+        total_max_usages:
+          type: integer
+          nullable: true
+          description: Общий лимит использований (null = безлимита)
+          example: 1000
+        rules_json:
+          type: object
+          description: Дополнительные правила
+          properties:
+            first_order_only:
+              type: boolean
+              description: Только для первого заказа
+              default: false
+            categories:
+              type: array
+              items:
+                type: string
+              description: Категории товаров, для которых действует промокод
+            min_items:
+              type: integer
+              description: Минимальное количество товаров в заказе
+            excluded_products:
+              type: array
+              items:
+                type: string
+              description: Исключенные товары
+
+    PromoCodeUpdateRequest:
+      type: object
+      properties:
+        discount_value:
+          type: number
+          format: double
+          minimum: 0
+        min_order_amount:
+          type: number
+          format: double
+          minimum: 0
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+        is_active:
+          type: boolean
+        max_usages_per_user:
+          type: integer
+          nullable: true
+        total_max_usages:
+          type: integer
+          nullable: true
+        rules_json:
+          type: object
+
+    PromoCodeResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "promo_987654321"
+        code:
+          type: string
+          example: "SUMMER2024"
+        discount_type:
+          $ref: '#/components/schemas/DiscountType'
+        discount_value:
+          type: number
+          format: double
+          example: 20.00
+        min_order_amount:
+          type: number
+          format: double
+          example: 500.00
+        valid_until:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2024-12-31T23:59:59Z"
+        is_active:
+          type: boolean
+          example: true
+        max_usages_per_user:
+          type: integer
+          nullable: true
+          example: 1
+        total_max_usages:
+          type: integer
+          nullable: true
+          example: 1000
+        current_usages:
+          type: integer
+          description: Текущее количество использований
+          example: 150
+        rules_json:
+          type: object
+        created_at:
+          type: string
+          format: date-time
+          example: "2024-01-01T00:00:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2024-01-10T12:00:00Z"
+        created_by:
+          type: string
+          description: ID администратора, создавшего промокод
+          example: "admin_001"
+
+    # === Statistics Schemas ===
+    PromoCodeStatistics:
+      type: object
+      properties:
+        promo_code_id:
+          type: string
+          example: "promo_987654321"
+        code:
+          type: string
+          example: "SUMMER2024"
+        total_usages:
+          type: integer
+          description: Общее количество использований
+          example: 150
+        total_discount_amount:
+          type: number
+          format: double
+          description: Общая сумма предоставленных скидок
+          example: 30000.00
+        total_order_amount:
+          type: number
+          format: double
+          description: Общая сумма заказов с промокодом
+          example: 150000.00
+        unique_users:
+          type: integer
+          description: Количество уникальных пользователей
+          example: 120
+        usage_by_period:
+          type: array
+          description: Использования по периодам (дни/недели/месяцы)
+          items:
+            type: object
+            properties:
+              period:
+                type: string
+                format: date
+              usages:
+                type: integer
+              discount_amount:
+                type: number
+                format: double
+        recent_usages:
+          type: array
+          description: Последние 10 использований
+          items:
+            $ref: '#/components/schemas/PromoUsageEntry'
+        conversion_rate:
+          type: number
+          format: double
+          description: Конверсия (успешные платежи / валидации)
+          example: 0.75
+
+    PromoUsageEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        user_id:
+          type: string
+        order_id:
+          type: integer
+        payment_id:
+          type: string
+        discount_applied:
+          type: number
+          format: double
+        created_at:
+          type: string
+          format: date-time
+
+    OverviewStatistics:
+      type: object
+      properties:
+        period:
+          type: object
+          properties:
+            from_date:
+              type: string
+              format: date
+            to_date:
+              type: string
+              format: date
+        payments:
+          type: object
+          properties:
+            total_count:
+              type: integer
+            succeeded_count:
+              type: integer
+            failed_count:
+              type: integer
+            refunded_count:
+              type: integer
+            total_amount:
+              type: number
+              format: double
+            total_refunded_amount:
+              type: number
+              format: double
+        promo_codes:
+          type: object
+          properties:
+            active_count:
+              type: integer
+            inactive_count:
+              type: integer
+            total_usages:
+              type: integer
+            total_discount_amount:
+              type: number
+              format: double
+        payment_methods:
+          type: array
+          description: Распределение по методам оплаты
+          items:
+            type: object
+            properties:
+              method:
+                $ref: '#/components/schemas/PaymentMethod'
+              count:
+                type: integer
+              amount:
+                type: number
+                format: double
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        promo_code_id:
+          type: string
+        promo_code:
+          type: string
+        action:
+          type: string
+          enum: [create, update, delete]
+        admin_user_id:
+          type: string
+        admin_email:
+          type: string
+          nullable: true
+        changes:
+          type: object
+          description: Измененные поля (старое → новое значение)
+          additionalProperties:
+            type: object
+            properties:
+              old: {}
+              new: {}
+        created_at:
+          type: string
+          format: date-time
+        ip_address:
+          type: string
+          nullable: true
+
+    # === Common Schemas ===
+    Error:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Код ошибки для программной обработки
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          description: Человеко-понятное сообщение
+          example: "Неверный формат данных"
+        details:
+          type: array
+          nullable: true
+          description: Детали валидации (для ошибок 422)
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              message:
+                type: string
+        request_id:
+          type: string
+          description: ID запроса для логирования
+          example: "req_abc123"
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+          example: healthy
+        version:
+          type: string
+          example: "1.2.0"
+        timestamp:
+          type: string
+          format: date-time
+        checks:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, failed]
+            cache:
+              type: string
+              enum: [ok, failed]
+              nullable: true
+
+# =============================================
+# PATHS
+# =============================================
+paths:
+  # --- HEALTH CHECK ---
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Проверка работоспособности
+      description: Возвращает статус сервиса и подключение к БД
+      operationId: healthCheck
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Сервис недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  # --- PAYMENTS: Client API ---
+  /payments:
+    post:
+      tags:
+        - Payments
+      summary: Создание платежа
+      description: |
+        Инициация платежа для заказа.
+        
+        ## Требования к заголовкам:
+        - `X-User-ID`: ID пользователя (из Gateway)
+        - `X-User-Role`: Должна быть `user`, `staff` или `admin`
+        - `X-User-Is-Active`: Должно быть `true`
+        - `X-Request-ID`: Для tracing
+        
+        ## Важные правила:
+        1. `transaction_id` должен быть уникальным на стороне клиента
+        2. Если указан `promo_code`, сервер перепроверит скидку
+        3. `amount` должен соответствовать `order_amount - discount`
+      operationId: createPayment
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXUserIsActive'
+        - $ref: '#/components/parameters/HeaderXUserIsVerified'
+        - $ref: '#/components/parameters/HeaderXUserEmail'
+        - $ref: '#/components/parameters/HeaderXUserVenueID'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaymentCreateRequest'
+            examples:
+              card_payment:
+                summary: Оплата картой
+                value:
+                  order_id: 123456
+                  amount: 1500.00
+                  currency: RUB
+                  payment_method: bank_card
+                  transaction_id: "txn_client_abc123"
+              with_promo:
+                summary: Оплата с промокодом
+                value:
+                  order_id: 123456
+                  amount: 1200.00
+                  currency: RUB
+                  payment_method: sbp
+                  transaction_id: "txn_client_xyz789"
+                  promo_code: "SUMMER2024"
+      responses:
+        '201':
+          description: Платеж успешно создан
+          headers:
+            X-Request-ID:
+              schema:
+                type: string
+              description: ID запроса для логирования
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          description: Ошибка валидации данных
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Доступ запрещен (пользователь неактивен или неверная роль)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Конфликт (дубликат transaction_id)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Ошибка бизнес-валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Payments
+      summary: Список платежей пользователя
+      description: Возвращает историю платежей текущего пользователя (из X-User-ID)
+      operationId: listUserPayments
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: status
+          in: query
+          description: Фильтр по статусу платежа
+          schema:
+            $ref: '#/components/schemas/PaymentStatus'
+        - name: order_id
+          in: query
+          description: Фильтр по ID заказа
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Список платежей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentResponse'
+                  total:
+                    type: integer
+                    description: Общее количество записей
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+
+  /payments/{payment_id}:
+    get:
+      tags:
+        - Payments
+      summary: Детали платежа
+      operationId: getPayment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      responses:
+        '200':
+          description: Детали платежа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '403':
+          description: Доступ запрещен (платеж принадлежит другому пользователю)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Платеж не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /payments/{payment_id}/refund:
+    post:
+      tags:
+        - Payments
+      summary: Возврат средств
+      description: |
+        Инициирует полный возврат средств по платежу.
+        
+        ## Требования:
+        - Роль: `admin`
+        - Статус платежа: `succeeded`
+        - Возврат еще не был инициирован
+      operationId: refundPayment
+      parameters:
+        - $ref: '#/components/parameters/PaymentId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Причина возврата (для аудита)
+                  example: "Клиент отменил заказ"
+      responses:
+        '200':
+          description: Возврат успешно инициирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentResponse'
+        '400':
+          description: Возврат невозможен (статус или время)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Недостаточно прав для возврата
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # --- PROMO CODES: Client API ---
+  /promo/validate:
+    post:
+      tags:
+        - Promo Codes (Client)
+      summary: Валидация промокода
+      description: |
+        Проверяет промокод и рассчитывает скидку на стороне сервера.
+        
+        ## Требования к заголовкам:
+        - `X-User-ID`: Для проверки лимитов использования
+        - `X-User-Is-Verified`: Некоторые промокоды только для верифицированных
+        
+        ## Важно:
+        - Не создает запись в promo_code_usages
+        - Не резервирует промокод
+        - Возвращает итоговую сумму для использования в платеже
+      operationId: validatePromoCode
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserIsVerified'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoValidateRequest'
+      responses:
+        '200':
+          description: Промокод валиден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoValidateResponse'
+        '400':
+          description: Промокод недействителен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoValidationError'
+        '403':
+          description: Требуется верификация или пользователь неактивен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Промокод не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # --- PROMO CODES: Admin API ---
+  /admin/promo-codes:
+    post:
+      tags:
+        - Promo Codes (Admin)
+      summary: Создать промокод
+      description: |
+        Создание нового промокода.
+        
+        ## Требования:
+        - Роль: `admin`
+      operationId: createPromoCode
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXUserVenueID'
+        - $ref: '#/components/parameters/HeaderXUserEmail'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeCreateRequest'
+      responses:
+        '201':
+          description: Промокод создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeResponse'
+        '400':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Недостаточно прав
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Промокод с таким кодом уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    get:
+      tags:
+        - Promo Codes (Admin)
+      summary: Список всех промокодов
+      description: Пагинация и фильтры для администраторов
+      operationId: listPromoCodes
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXUserVenueID'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+        - $ref: '#/components/parameters/PaginationLimit'
+        - $ref: '#/components/parameters/PaginationOffset'
+        - name: is_active
+          in: query
+          description: Фильтр по статусу активности
+          schema:
+            type: boolean
+        - name: discount_type
+          in: query
+          description: Фильтр по типу скидки
+          schema:
+            type: string
+            enum: [fixed, percent]
+        - name: search
+          in: query
+          description: Поиск по коду (частичное совпадение)
+          schema:
+            type: string
+            maxLength: 50
+      responses:
+        '200':
+          description: Список промокодов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PromoCodeResponse'
+                  total:
+                    type: integer
+                  offset:
+                    type: integer
+                  limit:
+                    type: integer
+
+  /admin/promo-codes/{promo_id}:
+    get:
+      tags:
+        - Promo Codes (Admin)
+      summary: Детали промокода
+      operationId: getPromoCode
+      parameters:
+        - $ref: '#/components/parameters/PromoId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      responses:
+        '200':
+          description: Детали промокода
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeResponse'
+        '403':
+          description: Доступ запрещен (promo принадлежит другому venue)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Промокод не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    put:
+      tags:
+        - Promo Codes (Admin)
+      summary: Обновить промокод
+      description: |
+        Обновление существующего промокода.
+        
+        ## Ограничения:
+        - `code` изменять нельзя
+        - Можно менять срок, статус, лимиты
+      operationId: updatePromoCode
+      parameters:
+        - $ref: '#/components/parameters/PromoId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromoCodeUpdateRequest'
+      responses:
+        '200':
+          description: Промокод обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeResponse'
+        '400':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Недостаточно прав
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Промокод не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+    delete:
+      tags:
+        - Promo Codes (Admin)
+      summary: Деактивировать промокод
+      description: Мягкое удаление (is_active = false)
+      operationId: deletePromoCode
+      parameters:
+        - $ref: '#/components/parameters/PromoId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      responses:
+        '204':
+          description: Промокод деактивирован
+        '403':
+          description: Недостаточно прав
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Промокод не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # --- STATISTICS ---
+  /admin/promo-codes/{promo_id}/statistics:
+    get:
+      tags:
+        - Statistics
+      summary: Статистика по промокоду
+      operationId: getPromoCodeStatistics
+      parameters:
+        - $ref: '#/components/parameters/PromoId'
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+        - name: period
+          in: query
+          description: Период статистики
+          schema:
+            type: string
+            enum: [day, week, month, all]
+            default: all
+      responses:
+        '200':
+          description: Статистика промокода
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PromoCodeStatistics'
+        '403':
+          description: Доступ запрещен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Промокод не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /admin/statistics/overview:
+    get:
+      tags:
+        - Statistics
+      summary: Общая статистика по платежам и промокодам
+      operationId: getOverviewStatistics
+      parameters:
+        - $ref: '#/components/parameters/HeaderXUserID'
+        - $ref: '#/components/parameters/HeaderXUserRole'
+        - $ref: '#/components/parameters/HeaderXUserStaffRole'
+        - $ref: '#/components/parameters/HeaderXRequestID'
+        - name: from_date
+          in: query
+          description: Начало периода
+          schema:
+            type: string
+            format: date
+        - name: to_date
+          in: query
+          description: Конец периода
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Сводная статистика
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverviewStatistics'
+
+  # --- WEBHOOKS ---
+  /webhooks/{gateway}:
+    post:
+      tags:
+        - Webhooks
+      summary: Уведомления от платежного шлюза
+      description: |
+        Endpoint для получения статусов от внешних провайдеров.
+        
+        ## Безопасность:
+        - Не требует InternalAuth заголовков
+        - Требует подпись шлюза в заголовке `X-Gateway-Signature`
+        - Проверяется HMAC подпись
+      operationId: receiveWebhook
+      security: []
+      parameters:
+        - name: gateway
+          in: path
+          required: true
+          description: Название платежного шлюза
+          schema:
+            type: string
+            enum: [bank_card, sbp]
+        - $ref: '#/components/parameters/HeaderXRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Payload зависит от конкретного шлюза
+              example:
+                transaction_id: "txn_gateway_abc123"
+                status: succeeded
+                amount: 1500.00
+                currency: RUB
+                paid_at: "2024-01-15T10:30:00Z"
+      responses:
+        '200':
+          description: Webhook принят и обработан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: accepted
+        '400':
+          description: Неверный формат payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Неверная подпись шлюза
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
