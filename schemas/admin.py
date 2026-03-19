@@ -54,6 +54,44 @@ class PromoUsageEntry(BaseModel):
     created_at: datetime
 
 
+class PromoUsagePeriodEntry(BaseModel):
+    period: datetime | str
+    usages: int
+    discount_amount: Decimal
+
+
+class OverviewPeriod(BaseModel):
+    from_date: date | None = None
+    to_date: date | None = None
+
+
+class PaymentOverviewStatistics(BaseModel):
+    total_count: int
+    succeeded_count: int
+    failed_count: int
+    refunded_count: int
+    total_amount: Decimal
+    total_refunded_amount: Decimal
+
+
+class PromoCodesOverviewStatistics(BaseModel):
+    active_count: int
+    inactive_count: int
+    total_usages: int
+    total_discount_amount: Decimal
+
+
+class PromoUsageOverviewStatistics(BaseModel):
+    total_usages: int
+    total_discount_amount: Decimal
+
+
+class PaymentMethodStatistics(BaseModel):
+    method: str
+    count: int
+    amount: Decimal
+
+
 class PromoCodeStatistics(BaseModel):
     promo_code_id: str
     code: str
@@ -61,13 +99,13 @@ class PromoCodeStatistics(BaseModel):
     total_discount_amount: Decimal
     total_order_amount: Decimal
     unique_users: int
-    usage_by_period: list[dict[str, Any]]
+    usage_by_period: list[PromoUsagePeriodEntry]
     recent_usages: list[PromoUsageEntry]
     conversion_rate: float
 
 
 class OverviewStatistics(BaseModel):
-    period: dict[str, date | None]
-    payments: dict[str, int | Decimal]
-    promo_codes: dict[str, int | Decimal]
-    payment_methods: list[dict[str, int | Decimal | str]]
+    period: OverviewPeriod
+    payments: PaymentOverviewStatistics
+    promo_codes: PromoCodesOverviewStatistics
+    payment_methods: list[PaymentMethodStatistics]
