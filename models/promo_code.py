@@ -9,7 +9,6 @@ from core.database import Base
 
 class PromoCode(Base):
     __tablename__ = 'promo_codes'
-    __table_args__ = {'schema': 'public'}
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
