@@ -1,17 +1,17 @@
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from dependency import CurrentUser
-from models.payment import Payment
 from models.promo_code import PromoCode
-from models.promo_code_usage import PromoCodeUsage
+from repositories.payment import PaymentRepository
 from repositories.promo_code import PromoCodeRepository
 from repositories.promo_code_usage import PromoCodeUsageRepository
 from schemas.admin import (
     OverviewStatistics,
+    OverviewPeriod,
+    PromoCodesOverviewStatistics,
     PromoCodeCreateRequest,
     PromoCodeResponse,
     PromoCodeStatistics,
@@ -26,6 +26,7 @@ from services.errors import ServiceError
 class AdminService:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.payment_repo = PaymentRepository(session)
         self.promo_repo = PromoCodeRepository(session)
         self.usage_repo = PromoCodeUsageRepository(session)
 
@@ -118,10 +119,7 @@ class AdminService:
         unique_users = await self.usage_repo.count_unique_users(promo_id)
         usage_by_period = await self.usage_repo.usage_by_period(promo_id, period)
         recent_rows = await self.usage_repo.recent_entries(promo_id)
-
-        total_order_amount = await self.session.scalar(
-            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.promo_code_id == promo_id)
-        )
+        total_order_amount = await self.payment_repo.sum_amount_for_promo(promo_id)
 
         recent_usages = [
             PromoUsageEntry(
@@ -141,7 +139,7 @@ class AdminService:
             code=promo.code,
             total_usages=total_usages,
             total_discount_amount=Decimal(str(total_discount)),
-            total_order_amount=Decimal(str(total_order_amount or 0)),
+            total_order_amount=total_order_amount,
             unique_users=unique_users,
             usage_by_period=usage_by_period,
             recent_usages=recent_usages,
@@ -150,46 +148,23 @@ class AdminService:
 
     async def overview_statistics(self, actor: CurrentUser, from_date: date | None, to_date: date | None) -> OverviewStatistics:
         self._assert_admin_role(actor)
-
-        payment_query = select(Payment)
-        usage_query = select(PromoCodeUsage)
-        if from_date:
-            payment_query = payment_query.where(func.date(Payment.created_at) >= from_date)
-            usage_query = usage_query.where(func.date(PromoCodeUsage.created_at) >= from_date)
-        if to_date:
-            payment_query = payment_query.where(func.date(Payment.created_at) <= to_date)
-            usage_query = usage_query.where(func.date(PromoCodeUsage.created_at) <= to_date)
-
-        payment_rows = (await self.session.execute(payment_query)).scalars().all()
-        usage_rows = (await self.session.execute(usage_query)).scalars().all()
-
-        payment_methods: dict[str, dict[str, int | Decimal | str]] = {}
-        for payment in payment_rows:
-            key = payment.payment_method.value if hasattr(payment.payment_method, 'value') else str(payment.payment_method)
-            payment_methods.setdefault(key, {'method': key, 'count': 0, 'amount': Decimal('0.00')})
-            payment_methods[key]['count'] = int(payment_methods[key]['count']) + 1
-            payment_methods[key]['amount'] = Decimal(str(payment_methods[key]['amount'])) + payment.amount
+        payment_totals = await self.payment_repo.overview_totals(from_date, to_date)
+        payment_methods = await self.payment_repo.overview_by_payment_method(from_date, to_date)
+        usage_totals = await self.usage_repo.overview_totals(from_date, to_date)
 
         active_promos = await self.promo_repo.count_active()
         total_promos = await self.promo_repo.count_total()
 
         return OverviewStatistics(
-            period={'from_date': from_date, 'to_date': to_date},
-            payments={
-                'total_count': len(payment_rows),
-                'succeeded_count': len([p for p in payment_rows if p.status.value == 'succeeded']),
-                'failed_count': len([p for p in payment_rows if p.status.value == 'failed']),
-                'refunded_count': len([p for p in payment_rows if p.status.value == 'refunded']),
-                'total_amount': sum([p.amount for p in payment_rows], Decimal('0.00')),
-                'total_refunded_amount': sum([p.refunded_amount for p in payment_rows], Decimal('0.00')),
-            },
-            promo_codes={
-                'active_count': active_promos,
-                'inactive_count': max(total_promos - active_promos, 0),
-                'total_usages': len(usage_rows),
-                'total_discount_amount': sum([u.discount_applied for u in usage_rows], Decimal('0.00')),
-            },
-            payment_methods=list(payment_methods.values()),
+            period=OverviewPeriod(from_date=from_date, to_date=to_date),
+            payments=payment_totals,
+            promo_codes=PromoCodesOverviewStatistics(
+                active_count=active_promos,
+                inactive_count=max(total_promos - active_promos, 0),
+                total_usages=usage_totals.total_usages,
+                total_discount_amount=usage_totals.total_discount_amount,
+            ),
+            payment_methods=payment_methods,
         )
 
     async def _to_response(self, promo: PromoCode) -> PromoCodeResponse:
