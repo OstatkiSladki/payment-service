@@ -12,52 +12,52 @@ from services.payment import PaymentService
 router = APIRouter()
 
 
-@router.post('', response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def create_payment(
-    payload: PaymentCreateRequest,
-    response: Response,
-    actor: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+  payload: PaymentCreateRequest,
+  response: Response,
+  actor: CurrentUser = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db_session),
 ) -> PaymentResponse:
-    service = PaymentService(session)
-    result, status_code = await service.create_payment(payload, actor)
-    response.status_code = status_code
-    return result
+  service = PaymentService(session)
+  result, status_code = await service.create_payment(payload, actor)
+  response.status_code = status_code
+  return result
 
 
-@router.get('', response_model=PaginatedResponse)
+@router.get("", response_model=PaginatedResponse)
 async def list_user_payments(
-    query: Annotated[PaymentListQuery, Query()],
-    actor: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+  query: Annotated[PaymentListQuery, Query()],
+  actor: CurrentUser = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db_session),
 ) -> PaginatedResponse:
-    service = PaymentService(session)
-    items, total = await service.list_payments(
-        actor=actor,
-        limit=query.limit,
-        offset=query.offset,
-        status=query.status,
-        order_id=query.order_id,
-    )
-    return PaginatedResponse(items=items, total=total, offset=query.offset, limit=query.limit)
+  service = PaymentService(session)
+  items, total = await service.list_payments(
+    actor=actor,
+    limit=query.limit,
+    offset=query.offset,
+    status=query.status,
+    order_id=query.order_id,
+  )
+  return PaginatedResponse(items=items, total=total, offset=query.offset, limit=query.limit)
 
 
-@router.get('/{payment_id}', response_model=PaymentResponse)
+@router.get("/{payment_id}", response_model=PaymentResponse)
 async def get_payment(
-    payment_id: int,
-    actor: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+  payment_id: int,
+  actor: CurrentUser = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db_session),
 ) -> PaymentResponse:
-    service = PaymentService(session)
-    return await service.get_payment(payment_id, actor)
+  service = PaymentService(session)
+  return await service.get_payment(payment_id, actor)
 
 
-@router.post('/{payment_id}/refund', response_model=PaymentResponse)
+@router.post("/{payment_id}/refund", response_model=PaymentResponse)
 async def refund_payment(
-    payment_id: int,
-    _: PaymentRefundRequest | None = None,
-    actor: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
+  payment_id: int,
+  _: PaymentRefundRequest | None = None,
+  actor: CurrentUser = Depends(get_current_user),
+  session: AsyncSession = Depends(get_db_session),
 ) -> PaymentResponse:
-    service = PaymentService(session)
-    return await service.refund_payment(payment_id, actor)
+  service = PaymentService(session)
+  return await service.refund_payment(payment_id, actor)

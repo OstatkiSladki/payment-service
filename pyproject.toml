@@ -46,3 +46,28 @@ include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+
+[tool.ruff]
+line-length = 100
+indent-width = 2
+target-version = "py312"
+fix = true
+exclude = [".venv", "__pacache__", ".git", "migrations"]
+
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4"]
+ignore = ["B008"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.isort]
+known-first-party = ["light-control-backend"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.6",
+]
