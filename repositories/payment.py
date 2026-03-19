@@ -1,10 +1,13 @@
 from collections.abc import Sequence
+from datetime import date
+from decimal import Decimal
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.payment import Payment, PaymentStatus
 from repositories.base import BaseRepository
+from schemas.admin import PaymentMethodStatistics, PaymentOverviewStatistics
 from schemas.auth import UsersRole
 
 
@@ -59,3 +62,72 @@ class PaymentRepository(BaseRepository[Payment]):
         self.session.add(payment)
         await self.session.flush()
         return payment
+
+    @staticmethod
+    def _apply_created_date_filter(query, from_date: date | None, to_date: date | None):
+        if from_date is not None:
+            query = query.where(func.date(Payment.created_at) >= from_date)
+        if to_date is not None:
+            query = query.where(func.date(Payment.created_at) <= to_date)
+        return query
+
+    async def sum_amount_for_promo(self, promo_id: int) -> Decimal:
+        value = await self.session.scalar(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(Payment.promo_code_id == promo_id)
+        )
+        return Decimal(str(value or 0))
+
+    async def overview_totals(self, from_date: date | None, to_date: date | None) -> PaymentOverviewStatistics:
+        query = select(
+            func.count(Payment.id).label('total_count'),
+            func.coalesce(
+                func.sum(case((Payment.status == PaymentStatus.SUCCEEDED, 1), else_=0)),
+                0,
+            ).label('succeeded_count'),
+            func.coalesce(
+                func.sum(case((Payment.status == PaymentStatus.FAILED, 1), else_=0)),
+                0,
+            ).label('failed_count'),
+            func.coalesce(
+                func.sum(case((Payment.status == PaymentStatus.REFUNDED, 1), else_=0)),
+                0,
+            ).label('refunded_count'),
+            func.coalesce(func.sum(Payment.amount), 0).label('total_amount'),
+            func.coalesce(func.sum(Payment.refunded_amount), 0).label('total_refunded_amount'),
+        )
+        query = self._apply_created_date_filter(query, from_date, to_date)
+        row = (await self.session.execute(query)).one()
+        return PaymentOverviewStatistics(
+            total_count=int(row.total_count or 0),
+            succeeded_count=int(row.succeeded_count or 0),
+            failed_count=int(row.failed_count or 0),
+            refunded_count=int(row.refunded_count or 0),
+            total_amount=Decimal(str(row.total_amount or 0)),
+            total_refunded_amount=Decimal(str(row.total_refunded_amount or 0)),
+        )
+
+    async def overview_by_payment_method(
+        self,
+        from_date: date | None,
+        to_date: date | None,
+    ) -> list[PaymentMethodStatistics]:
+        query = (
+            select(
+                Payment.payment_method.label('method'),
+                func.count(Payment.id).label('count'),
+                func.coalesce(func.sum(Payment.amount), 0).label('amount'),
+            )
+            .where(Payment.payment_method.is_not(None))
+            .group_by(Payment.payment_method)
+        )
+        query = self._apply_created_date_filter(query, from_date, to_date)
+
+        rows = await self.session.execute(query)
+        return [
+            PaymentMethodStatistics(
+                method=row.method.value if hasattr(row.method, 'value') else str(row.method),
+                count=int(row.count or 0),
+                amount=Decimal(str(row.amount or 0)),
+            )
+            for row in rows
+        ]

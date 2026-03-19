@@ -1,11 +1,13 @@
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.promo_code_usage import PromoCodeUsage
 from repositories.base import BaseRepository
+from schemas.admin import PromoUsageOverviewStatistics, PromoUsagePeriodEntry
 from schemas.queries import StatsPeriod
 
 
@@ -51,11 +53,17 @@ class PromoCodeUsageRepository(BaseRepository[PromoCodeUsage]):
         self,
         promo_code_id: int,
         period: StatsPeriod,
-    ) -> list[dict[str, str | int | float | datetime]]:
+    ) -> list[PromoUsagePeriodEntry]:
         if period == StatsPeriod.ALL:
             count = await self.count_total(promo_code_id)
             amount = await self.sum_discount(promo_code_id)
-            return [{'period': StatsPeriod.ALL.value, 'usages': count, 'discount_amount': amount}]
+            return [
+                PromoUsagePeriodEntry(
+                    period=StatsPeriod.ALL.value,
+                    usages=count,
+                    discount_amount=Decimal(str(amount)),
+                )
+            ]
 
         bucket = {
             StatsPeriod.DAY: 'day',
@@ -73,11 +81,11 @@ class PromoCodeUsageRepository(BaseRepository[PromoCodeUsage]):
             .order_by(func.date_trunc(bucket, PromoCodeUsage.created_at))
         )
         return [
-            {
-                'period': item.period,
-                'usages': int(item.usages),
-                'discount_amount': float(item.discount_amount),
-            }
+            PromoUsagePeriodEntry(
+                period=item.period,
+                usages=int(item.usages),
+                discount_amount=Decimal(str(item.discount_amount or 0)),
+            )
             for item in rows
         ]
 
@@ -85,3 +93,23 @@ class PromoCodeUsageRepository(BaseRepository[PromoCodeUsage]):
         self.session.add(usage)
         await self.session.flush()
         return usage
+
+    @staticmethod
+    def _apply_created_date_filter(query, from_date: date | None, to_date: date | None):
+        if from_date is not None:
+            query = query.where(func.date(PromoCodeUsage.created_at) >= from_date)
+        if to_date is not None:
+            query = query.where(func.date(PromoCodeUsage.created_at) <= to_date)
+        return query
+
+    async def overview_totals(self, from_date: date | None, to_date: date | None) -> PromoUsageOverviewStatistics:
+        query = select(
+            func.count(PromoCodeUsage.id).label('total_usages'),
+            func.coalesce(func.sum(PromoCodeUsage.discount_applied), 0).label('total_discount_amount'),
+        )
+        query = self._apply_created_date_filter(query, from_date, to_date)
+        row = (await self.session.execute(query)).one()
+        return PromoUsageOverviewStatistics(
+            total_usages=int(row.total_usages or 0),
+            total_discount_amount=Decimal(str(row.total_discount_amount or 0)),
+        )
