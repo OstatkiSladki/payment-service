@@ -9,6 +9,7 @@ from core.database import Base
 
 class PromoCodeUsage(Base):
   __tablename__ = "promo_code_usages"
+  __table_args__ = {"schema": "public"}
 
   id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
   promo_code_id: Mapped[int] = mapped_column(

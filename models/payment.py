@@ -23,6 +23,7 @@ class PaymentStatus(StrEnum):
 
 class Payment(Base):
   __tablename__ = "payments"
+  __table_args__ = {"schema": "public"}
 
   id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
   order_id: Mapped[int] = mapped_column(BIGINT, index=True)
