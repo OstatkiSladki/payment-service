@@ -13,9 +13,9 @@ from schemas.admin import (
   OverviewPeriod,
   PromoCodesOverviewStatistics,
   PromoCodeCreateRequest,
+  PromoCodePatchRequest,
   PromoCodeResponse,
   PromoCodeStatistics,
-  PromoCodeUpdateRequest,
   PromoUsageEntry,
 )
 from schemas.auth import UsersRole
@@ -88,7 +88,7 @@ class AdminService:
     return await self._to_response(promo)
 
   async def update_promo(
-    self, promo_id: int, payload: PromoCodeUpdateRequest, actor: CurrentUser
+    self, promo_id: int, payload: PromoCodePatchRequest, actor: CurrentUser
   ) -> PromoCodeResponse:
     self._assert_admin_role(actor)
     promo = await self.promo_repo.get_for_admin(promo_id)

@@ -7,9 +7,9 @@ from dependency import CurrentUser, get_current_user, get_db_session
 from schemas.admin import (
   OverviewStatistics,
   PromoCodeCreateRequest,
+  PromoCodePatchRequest,
   PromoCodeResponse,
   PromoCodeStatistics,
-  PromoCodeUpdateRequest,
 )
 from schemas.common import PaginatedResponse
 from schemas.queries import (
@@ -60,10 +60,10 @@ async def get_promo_code(
   return await service.get_promo(promo_id, actor)
 
 
-@router.put("/promo-codes/{promo_id}", response_model=PromoCodeResponse)
+@router.patch("/promo-codes/{promo_id}", response_model=PromoCodeResponse)
 async def update_promo_code(
   promo_id: int,
-  payload: PromoCodeUpdateRequest,
+  payload: PromoCodePatchRequest,
   actor: CurrentUser = Depends(get_current_user),
   session: AsyncSession = Depends(get_db_session),
 ) -> PromoCodeResponse:

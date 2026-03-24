@@ -18,7 +18,7 @@ class PromoCodeCreateRequest(BaseModel):
   rules_json: dict[str, Any] = Field(default_factory=dict)
 
 
-class PromoCodeUpdateRequest(BaseModel):
+class PromoCodePatchRequest(BaseModel):
   discount_value: Decimal | None = Field(default=None, gt=Decimal("0.00"))
   min_order_amount: Decimal | None = Field(default=None, ge=Decimal("0.00"))
   valid_until: datetime | None = None
