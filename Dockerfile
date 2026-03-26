@@ -4,6 +4,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
+RUN mkdir -p specs/common && printf "# Payment Service\n" > specs/common/payment-specs.md
 
 RUN uv sync --frozen --compile-bytecode --no-cache
 
