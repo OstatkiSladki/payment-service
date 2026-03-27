@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
     title="Payment Service",
     version="1.0.0",
     debug=settings.app_debug,
+    root_path=settings.app_root_path,
     lifespan=lifespan,
   )
   app.include_router(api_router)

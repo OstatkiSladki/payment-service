@@ -10,6 +10,7 @@ class Settings(BaseSettings):
   app_env: str = "production"
   app_host: str = "0.0.0.0"
   app_port: int = 8000
+  app_root_path: str = ""
   app_debug: bool = False
   log_level: str = "INFO"
 
