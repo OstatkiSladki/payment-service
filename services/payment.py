@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
+import grpc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dependency import CurrentUser
 from models.payment import Payment, PaymentStatus
 from models.promo_code_usage import PromoCodeUsage
 from repositories.payment import PaymentRepository
@@ -13,19 +16,41 @@ from schemas.auth import UsersRole
 from schemas.payment import (
   PaymentCreateRequest,
   PaymentResponse,
+)
+from schemas.payment import (
   PaymentStatus as PaymentStatusSchema,
 )
 from services.errors import ServiceError
+from services.grpc_clients import (
+  CircuitBreakerOpenError,
+  GrpcDependencyError,
+  OrderServiceClient,
+  VenueServiceClient,
+)
 from services.promo import PromoService
+
+if TYPE_CHECKING:
+  from dependency import CurrentUser
 
 
 class PaymentService:
-  def __init__(self, session: AsyncSession):
+  def __init__(
+    self,
+    session: AsyncSession,
+    *,
+    order_client: OrderServiceClient,
+    venue_client: VenueServiceClient,
+  ):
     self.session = session
     self.payment_repo = PaymentRepository(session)
     self.promo_repo = PromoCodeRepository(session)
     self.usage_repo = PromoCodeUsageRepository(session)
-    self.promo_service = PromoService(session)
+    self.order_client = order_client
+    self.promo_service = PromoService(
+      session,
+      order_client=order_client,
+      venue_client=venue_client,
+    )
 
   async def create_payment(
     self, payload: PaymentCreateRequest, actor: CurrentUser
@@ -39,16 +64,64 @@ class PaymentService:
     if existing is not None:
       return self._to_response(existing), 200
 
+    try:
+      order_validation = await self.order_client.validate_order(payload.order_id, actor.user_id)
+    except grpc.aio.AioRpcError as exc:
+      if exc.code() == grpc.StatusCode.NOT_FOUND:
+        raise ServiceError(404, "ORDER_NOT_FOUND", "Order not found", actor.request_id) from exc
+      raise ServiceError(
+        503,
+        "ORDER_SERVICE_UNAVAILABLE",
+        "Order service is unavailable",
+        actor.request_id,
+      ) from exc
+    except (GrpcDependencyError, CircuitBreakerOpenError) as exc:
+      raise ServiceError(
+        503,
+        "ORDER_SERVICE_UNAVAILABLE",
+        "Order service is unavailable",
+        actor.request_id,
+      ) from exc
+
+    if not order_validation.is_valid:
+      raise ServiceError(
+        400,
+        order_validation.error_code or "ORDER_INVALID",
+        order_validation.error_message or "Order is not valid for payment",
+        actor.request_id,
+      )
+
     discount_amount = Decimal("0.00")
     promo_code_id: int | None = None
     promo_code_applied: str | None = None
+    order_details = None
 
     if payload.promo_code:
+      try:
+        order_details = await self.order_client.get_order_by_id(payload.order_id)
+      except grpc.aio.AioRpcError as exc:
+        if exc.code() == grpc.StatusCode.NOT_FOUND:
+          raise ServiceError(404, "ORDER_NOT_FOUND", "Order not found", actor.request_id) from exc
+        raise ServiceError(
+          503,
+          "ORDER_SERVICE_UNAVAILABLE",
+          "Order service is unavailable",
+          actor.request_id,
+        ) from exc
+      except (GrpcDependencyError, CircuitBreakerOpenError) as exc:
+        raise ServiceError(
+          503,
+          "ORDER_SERVICE_UNAVAILABLE",
+          "Order service is unavailable",
+          actor.request_id,
+        ) from exc
+
       promo_result = await self.promo_service.validate_for_payment(
         code=payload.promo_code,
         order_amount=payload.amount,
         user_id=actor.user_id,
         request_id=actor.request_id,
+        order_details=order_details,
       )
       discount_amount = promo_result.discount_amount
       promo_code = await self.promo_repo.get_by_code(payload.promo_code)
@@ -84,7 +157,6 @@ class PaymentService:
     await self.session.commit()
     await self.session.refresh(payment)
 
-    # TODO: add OrderService validation (order ownership/status) before payment creation.
     # TODO: publish payment-created/payment-succeeded events to RabbitMQ after gateway integration.
 
     response = self._to_response(payment)

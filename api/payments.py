@@ -1,9 +1,8 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from dependency import CurrentUser, get_current_user, get_db_session
+from dependency import CurrentUser, get_current_user, get_payment_service
 from schemas.common import PaginatedResponse
 from schemas.payment import PaymentCreateRequest, PaymentRefundRequest, PaymentResponse
 from schemas.queries import PaymentListQuery
@@ -17,9 +16,8 @@ async def create_payment(
   payload: PaymentCreateRequest,
   response: Response,
   actor: CurrentUser = Depends(get_current_user),
-  session: AsyncSession = Depends(get_db_session),
+  service: PaymentService = Depends(get_payment_service),
 ) -> PaymentResponse:
-  service = PaymentService(session)
   result, status_code = await service.create_payment(payload, actor)
   response.status_code = status_code
   return result
@@ -29,9 +27,8 @@ async def create_payment(
 async def list_user_payments(
   query: Annotated[PaymentListQuery, Query()],
   actor: CurrentUser = Depends(get_current_user),
-  session: AsyncSession = Depends(get_db_session),
+  service: PaymentService = Depends(get_payment_service),
 ) -> PaginatedResponse:
-  service = PaymentService(session)
   items, total = await service.list_payments(
     actor=actor,
     limit=query.limit,
@@ -46,9 +43,8 @@ async def list_user_payments(
 async def get_payment(
   payment_id: int,
   actor: CurrentUser = Depends(get_current_user),
-  session: AsyncSession = Depends(get_db_session),
+  service: PaymentService = Depends(get_payment_service),
 ) -> PaymentResponse:
-  service = PaymentService(session)
   return await service.get_payment(payment_id, actor)
 
 
@@ -57,7 +53,6 @@ async def refund_payment(
   payment_id: int,
   _: PaymentRefundRequest | None = None,
   actor: CurrentUser = Depends(get_current_user),
-  session: AsyncSession = Depends(get_db_session),
+  service: PaymentService = Depends(get_payment_service),
 ) -> PaymentResponse:
-  service = PaymentService(session)
   return await service.refund_payment(payment_id, actor)

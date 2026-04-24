@@ -525,7 +525,7 @@ components:
                 type: string
               description: Исключенные товары
 
-    PromoCodeUpdateRequest:
+    PromoCodePatchRequest:
       type: object
       properties:
         discount_value:
@@ -1251,7 +1251,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
-    put:
+    patch:
       tags:
         - Promo Codes (Admin)
       summary: Обновить промокод
@@ -1273,7 +1273,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/PromoCodeUpdateRequest'
+              $ref: '#/components/schemas/PromoCodePatchRequest'
       responses:
         '200':
           description: Промокод обновлен

@@ -1,12 +1,15 @@
 from collections.abc import AsyncIterator
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db_session as core_get_db_session
 from core.security import InternalAuthHeaders, get_internal_auth_headers
 from schemas.auth import StaffRole, UsersRole
+from services.grpc_clients import OrderServiceClient, VenueServiceClient
+from services.payment import PaymentService
+from services.promo import PromoService
 
 
 class CurrentUser(BaseModel):
@@ -48,3 +51,27 @@ async def get_current_user(
     venue_id=auth_headers.venue_id,
     request_id=auth_headers.request_id,
   )
+
+
+def get_order_service_client(request: Request) -> OrderServiceClient:
+  return request.app.state.order_service_client
+
+
+def get_venue_service_client(request: Request) -> VenueServiceClient:
+  return request.app.state.venue_service_client
+
+
+def get_promo_service(
+  session: AsyncSession = Depends(get_db_session),
+  order_client: OrderServiceClient = Depends(get_order_service_client),
+  venue_client: VenueServiceClient = Depends(get_venue_service_client),
+) -> PromoService:
+  return PromoService(session, order_client=order_client, venue_client=venue_client)
+
+
+def get_payment_service(
+  session: AsyncSession = Depends(get_db_session),
+  order_client: OrderServiceClient = Depends(get_order_service_client),
+  venue_client: VenueServiceClient = Depends(get_venue_service_client),
+) -> PaymentService:
+  return PaymentService(session, order_client=order_client, venue_client=venue_client)

@@ -9,12 +9,12 @@ from repositories.payment import PaymentRepository
 from repositories.promo_code import PromoCodeRepository
 from repositories.promo_code_usage import PromoCodeUsageRepository
 from schemas.admin import (
-  OverviewStatistics,
   OverviewPeriod,
-  PromoCodesOverviewStatistics,
+  OverviewStatistics,
   PromoCodeCreateRequest,
   PromoCodePatchRequest,
   PromoCodeResponse,
+  PromoCodesOverviewStatistics,
   PromoCodeStatistics,
   PromoUsageEntry,
 )

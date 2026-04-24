@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from core.config import get_settings
 from schemas.auth import StaffRole, UsersRole
 
-
 x_user_id_header = APIKeyHeader(name="X-User-ID", scheme_name="X-User-ID", auto_error=False)
 x_user_role_header = APIKeyHeader(name="X-User-Role", scheme_name="X-User-Role", auto_error=False)
 x_user_staff_role_header = APIKeyHeader(

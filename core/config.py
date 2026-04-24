@@ -34,6 +34,10 @@ class Settings(BaseSettings):
   grpc_order_service_port: int = 50051
   grpc_venue_service_host: str = "venue-service.internal"
   grpc_venue_service_port: int = 50052
+  grpc_startup_check_timeout: float = 5.0
+  grpc_circuit_breaker_failure_threshold: int = 5
+  grpc_circuit_breaker_reset_timeout: float = 30.0
+  grpc_startup_checks_enabled: bool = True
 
   gateway_user_id_header: str = "X-User-ID"
   gateway_user_role_header: str = "X-User-Role"

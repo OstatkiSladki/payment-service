@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from dependency import CurrentUser, get_current_user, get_db_session
+from dependency import CurrentUser, get_current_user, get_promo_service
 from schemas.promo import PromoValidateRequest, PromoValidateResponse
 from services.promo import PromoService
 
@@ -12,9 +11,8 @@ router = APIRouter()
 async def validate_promo(
   payload: PromoValidateRequest,
   actor: CurrentUser = Depends(get_current_user),
-  session: AsyncSession = Depends(get_db_session),
+  service: PromoService = Depends(get_promo_service),
 ) -> PromoValidateResponse:
-  service = PromoService(session)
   return await service.validate_for_payment(
     code=payload.code,
     order_amount=payload.order_amount,
