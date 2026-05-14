@@ -30,11 +30,12 @@ class Settings(BaseSettings):
   rabbitmq_vhost: str = "/"
   rabbitmq_exchange: str = "payments.events"
 
-  grpc_order_service_host: str = "order-service.internal"
+  grpc_order_service_host: str = "order-service"
   grpc_order_service_port: int = 50051
-  grpc_venue_service_host: str = "venue-service.internal"
+  grpc_venue_service_host: str = "venue-service"
   grpc_venue_service_port: int = 50052
-  grpc_startup_check_timeout: float = 5.0
+  grpc_startup_check_timeout: float = 30.0
+  grpc_call_timeout: float = 5.0
   grpc_circuit_breaker_failure_threshold: int = 5
   grpc_circuit_breaker_reset_timeout: float = 30.0
   grpc_startup_checks_enabled: bool = True

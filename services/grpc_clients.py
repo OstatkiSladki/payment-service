@@ -80,8 +80,9 @@ class _CircuitBreaker:
 
 
 class _BaseGrpcClient:
-  def __init__(self, *, target: str, service_name: str, timeout: float, failure_threshold: int, reset_timeout: float) -> None:
-    self._timeout = timeout
+  def __init__(self, *, target: str, service_name: str, startup_timeout: float, call_timeout: float, failure_threshold: int, reset_timeout: float) -> None:
+    self._startup_timeout = startup_timeout
+    self._call_timeout = call_timeout
     self._service_name = service_name
     self._breaker = _CircuitBreaker(failure_threshold, reset_timeout)
     self._channel = grpc.aio.insecure_channel(target, options=_CHANNEL_OPTIONS)
@@ -94,7 +95,7 @@ class _BaseGrpcClient:
     try:
       response = await self._health_stub.Check(
         health_pb2.HealthCheckRequest(service=self._service_name),
-        timeout=self._timeout,
+        timeout=self._startup_timeout,
         wait_for_ready=True,
       )
     except grpc.RpcError as exc:
@@ -105,7 +106,7 @@ class _BaseGrpcClient:
   async def _call(self, func, request):
     self._breaker.before_call()
     try:
-      response = await func(request, timeout=self._timeout, wait_for_ready=True)
+      response = await func(request, timeout=self._call_timeout, wait_for_ready=True)
     except grpc.RpcError as exc:
       self._breaker.record_failure()
       raise exc
@@ -119,7 +120,8 @@ class OrderServiceClient(_BaseGrpcClient):
     super().__init__(
       target=f"{settings.grpc_order_service_host}:{settings.grpc_order_service_port}",
       service_name="ostatki.grpc.v1.OrderQueryService",
-      timeout=settings.grpc_startup_check_timeout,
+      startup_timeout=settings.grpc_startup_check_timeout,
+      call_timeout=settings.grpc_call_timeout,
       failure_threshold=settings.grpc_circuit_breaker_failure_threshold,
       reset_timeout=settings.grpc_circuit_breaker_reset_timeout,
     )
@@ -144,7 +146,8 @@ class VenueServiceClient(_BaseGrpcClient):
     super().__init__(
       target=f"{settings.grpc_venue_service_host}:{settings.grpc_venue_service_port}",
       service_name="ostatki.grpc.v1.VenueDirectoryService",
-      timeout=settings.grpc_startup_check_timeout,
+      startup_timeout=settings.grpc_startup_check_timeout,
+      call_timeout=settings.grpc_call_timeout,
       failure_threshold=settings.grpc_circuit_breaker_failure_threshold,
       reset_timeout=settings.grpc_circuit_breaker_reset_timeout,
     )

@@ -3,7 +3,7 @@ name = "payment-service"
 version = "1.0.0"
 description = "Payment and Promo Codes Service"
 readme = "specs/common/payment-specs.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 dependencies = [
     "aio-pika>=9.4.0",
     "alembic>=1.13.0",
@@ -11,21 +11,12 @@ dependencies = [
     "fastapi>=0.109.0",
     "grpcio>=1.78.0",
     "grpcio-health-checking>=1.78.0",
-    "grpcio-tools>=1.78.0",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "protobuf>=6.33.0",
     "sqlalchemy[asyncio]>=2.0.25",
     "structlog>=24.1.0",
     "uvicorn[standard]>=0.27.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "factory-boy>=3.3.0",
-    "httpx>=0.26.0",
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.23.0",
 ]
 
 [build-system]
@@ -53,7 +44,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 indent-width = 2
-target-version = "py312"
+target-version = "py313"
 fix = true
 exclude = [".venv", "__pacache__", ".git", "migrations"]
 
@@ -66,10 +57,13 @@ ignore = ["B008"]
 quote-style = "double"
 indent-style = "space"
 
-[tool.ruff.isort]
-known-first-party = ["light-control-backend"]
 
 [dependency-groups]
 dev = [
+    "factory-boy>=3.3.0",
+    "grpcio-tools>=1.78.0",
+    "httpx>=0.26.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
     "ruff>=0.15.6",
 ]

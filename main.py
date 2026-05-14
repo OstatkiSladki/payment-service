@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -9,6 +11,7 @@ from core.database import close_engine
 from services.grpc_clients import OrderServiceClient, VenueServiceClient
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -18,8 +21,18 @@ async def lifespan(_: FastAPI):
   app.state.order_service_client = order_service_client
   app.state.venue_service_client = venue_service_client
   if settings.grpc_startup_checks_enabled:
-    await order_service_client.wait_until_serving()
-    await venue_service_client.wait_until_serving()
+    results = await asyncio.gather(
+      order_service_client.wait_until_serving(),
+      venue_service_client.wait_until_serving(),
+      return_exceptions=True,
+    )
+    for dep_name, result in zip(("order-service", "venue-service"), results):
+      if isinstance(result, Exception):
+        logger.warning(
+          "gRPC startup health check failed for %s: %s; continuing with lazy reconnect",
+          dep_name,
+          result,
+        )
   try:
     yield
   finally:

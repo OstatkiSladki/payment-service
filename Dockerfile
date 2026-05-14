@@ -1,26 +1,35 @@
-FROM python:3.13-slim-trixie AS builder
+FROM python:3.13-slim-bookworm AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
-RUN mkdir -p specs/common && printf "# Payment Service\n" > specs/common/payment-specs.md
 
-RUN uv sync --frozen --compile-bytecode --no-cache
+COPY pyproject.toml uv.lock ./
+COPY specs/common/payment-specs.md specs/common/payment-specs.md
+RUN uv sync --locked --no-dev --no-install-project
 
 COPY . .
+RUN uv sync --locked --no-dev
 
-FROM python:3.13-slim-trixie
+FROM python:3.13-slim-bookworm AS runtime
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-RUN useradd --create-home --shell /bin/bash appuser
+RUN useradd --create-home --shell /bin/bash --uid 1000 appuser
+
+WORKDIR /app
+COPY --from=builder --chown=appuser:appuser /app /app
+
+RUN chmod +x /app/entrypoint.sh
+
 USER appuser
-WORKDIR /home/appuser/app
 
-COPY --from=builder --chown=appuser:appuser /app/ ./
-
-ENV PATH="/home/appuser/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
-
-CMD ["uv", "run", "main.py"]
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["python", "main.py"]
